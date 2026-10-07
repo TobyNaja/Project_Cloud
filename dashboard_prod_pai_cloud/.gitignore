@@ -5,3 +5,6 @@ __pycache__/
 # ข้อมูลจริงจาก terraform apply และไฟล์ชั่วคราวของการเขียนแบบ atomic
 current_infra.json
 *.tmp
+
+# ประวัติ apply ที่ dashboard บันทึกเอง
+infra_history.json
