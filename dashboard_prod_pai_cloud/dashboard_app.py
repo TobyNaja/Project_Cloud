@@ -2,6 +2,7 @@ from flask import Flask, Response, request, jsonify, render_template
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -26,6 +27,9 @@ TERRAFORM_DIR = resolve_path(os.environ.get("TERRAFORM_DIR", os.path.join("..", 
 # ไฟล์ที่ /api/update เขียน (ข้อมูลที่ pipeline POST เข้ามา) อยู่ฝั่ง dashboard เสมอ
 PUSH_FILE = resolve_path(os.environ.get("INFRA_FILE", "current_infra.json"))
 SAMPLE_FILE = os.path.join(BASE_DIR, "current_infra_sample.json")
+# ประวัติของแต่ละ apply (ใช้ทำตัวเลขเปรียบเทียบและ sparkline) เก็บฝั่ง dashboard เสมอ
+HISTORY_FILE = os.path.join(BASE_DIR, "infra_history.json")
+HISTORY_LIMIT = 30
 # ชื่อไฟล์ที่ตรวจหาอัตโนมัติในโฟลเดอร์ Terraform เมื่อไม่ได้ตั้ง INFRA_JSON_PATH
 AUTO_NAMES = ("current_infra.json", "currentinfra.json", "terraform_output.json", "outputs.json")
 # ชื่อ output ที่ใช้เมื่อไฟล์เป็น `terraform output -json` แบบรวมทุก output
@@ -127,8 +131,8 @@ TYPE_CATEGORY = {
 HEALTHY = {"running", "active", "available", "in-service", "inservice", "healthy", "ok",
            "enabled", "attached", "issued"}
 INACTIVE = {"terminated", "deleted", "disabled", "inactive"}
-WARNING = {"stopped", "stopping", "pending", "shutting-down", "unhealthy", "degraded",
-           "impaired", "failed", "error", "provisioning", "draining"}
+WARNING = {"stopped", "stopping", "pending", "shutting-down", "degraded", "provisioning", "draining"}
+CRITICAL = {"unhealthy", "impaired", "failed", "error"}
 
 # ราคา on-demand โดยประมาณของ ap-southeast-1 (USD) ใช้ประเมินคร่าวๆ เท่านั้น
 HOURS_PER_MONTH = 730
@@ -184,6 +188,8 @@ def health_of(status):
         return "inactive"
     if status in WARNING:
         return "warning"
+    if status in CRITICAL:
+        return "critical"
     return "unknown"
 
 
@@ -276,9 +282,15 @@ def expand(key, value):
     return []
 
 
+def region_from_arns(payload):
+    """output ที่ไม่ได้ส่ง region มา ยังหา region ได้จาก ARN ตัวใดตัวหนึ่งในข้อมูล"""
+    match = re.search(r"arn:aws[a-z-]*:[a-z0-9-]+:([a-z]{2}(?:-[a-z]+)+-\d)", json.dumps(payload, default=str))
+    return match.group(1) if match else None
+
+
 def normalize(payload):
     ctx = {
-        "region": str(payload.get("region") or "unknown"),
+        "region": str(payload.get("region") or region_from_arns(payload) or "unknown"),
         "provider": str(payload.get("provider") or "aws"),
         "tags": payload.get("tags") if isinstance(payload.get("tags"), dict) else {},
     }
@@ -324,13 +336,15 @@ def normalize(payload):
 
 def summarize(resources):
     by_category, by_type = {}, {}
-    health = {"healthy": 0, "warning": 0, "inactive": 0, "unknown": 0}
+    health = {"healthy": 0, "warning": 0, "critical": 0, "inactive": 0, "unknown": 0}
     for r in resources:
         by_category[r["category"]] = by_category.get(r["category"], 0) + 1
         by_type[r["type"]] = by_type.get(r["type"], 0) + 1
         health[r["health"]] += 1
     if not resources:
         status = "No data"
+    elif health["critical"]:
+        status = "Critical"
     elif health["warning"]:
         status = "Warning"
     else:
@@ -341,8 +355,66 @@ def summarize(resources):
         "by_type": by_type,
         "health": health,
         "status": status,
+        "attention": health["warning"] + health["critical"],
         "monthly_cost": round(sum(r["monthly_cost"] for r in resources), 2),
     }
+
+
+def read_history():
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def public_history():
+    return [{k: v for k, v in e.items() if k not in ("digest", "resources")} for e in read_history()]
+
+
+def record_history(data, data_path):
+    """บันทึกสรุปของข้อมูลชุดใหม่และสิ่งที่เปลี่ยนเทียบกับชุดก่อน ข้ามถ้าเนื้อหาเหมือนเดิม"""
+    payload = unwrap(data)
+    content = {k: v for k, v in payload.items() if k != "update_time"}
+    digest = hashlib.sha1(json.dumps(content, sort_keys=True, default=str).encode()).hexdigest()
+    history = read_history()
+    last = history[-1] if history else None
+    if last and last.get("digest") == digest:
+        return
+
+    resources = normalize(payload)[0]
+    if not resources and not last:
+        return
+    current = {f"{r['type']}|{r['id']}": [r["name"], r["status"]] for r in resources}
+    before = last.get("resources") if last and isinstance(last.get("resources"), dict) else {}
+    when = payload.get("update_time")
+    if not when:
+        when = datetime.fromtimestamp(os.path.getmtime(data_path)).strftime("%Y-%m-%d %H:%M:%S")
+    summary = summarize(resources)
+    history.append({
+        "time": str(when),
+        "total": summary["total"],
+        "monthly_cost": summary["monthly_cost"],
+        "attention": summary["attention"],
+        "initial": last is None,
+        "added": [v[0] for k, v in current.items() if k not in before],
+        "removed": [v[0] for k, v in before.items() if k not in current],
+        "changed": [{"name": v[0], "from": before[k][1], "to": v[1]}
+                    for k, v in current.items() if k in before and before[k][1] != v[1]],
+        "digest": digest,
+        "resources": current,
+    })
+
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(HISTORY_FILE), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(history[-HISTORY_LIMIT:], f, ensure_ascii=False)
+        os.replace(tmp_path, HISTORY_FILE)
+    except OSError:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def stat_signature(path):
@@ -470,6 +542,10 @@ def get_snapshot():
 
         if state == "live":
             _last_good.update(data=data, path=used)
+            try:
+                record_history(data, used)
+            except Exception:  # ประวัติพังไม่ควรทำให้หน้าเว็บโหลดข้อมูลไม่ได้
+                app.logger.exception("Could not record apply history")
         elif head is None or head[1] == "ok":
             # ไฟล์หายไปหรือว่างเปล่าจริงๆ (เช่นหลัง destroy) ไม่ควรค้างข้อมูลเก่าไว้
             _last_good.update(data=None, path=None)
@@ -626,10 +702,12 @@ def get_data():
         "meta": {
             "project": payload.get("project"),
             "environment": payload.get("environment"),
-            "region": payload.get("region"),
+            "region": payload.get("region") or region_from_arns(payload),
+            "workspace": os.path.basename(TERRAFORM_DIR),
         },
         "summary": summarize(resources),
         "resources": resources,
+        "history": public_history() if source in ("live", "stale") else [],
         "raw": raw,
     })
     response.headers["ETag"] = version

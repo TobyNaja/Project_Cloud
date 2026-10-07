@@ -4,660 +4,198 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Prodpai Cloud - Infrastructure</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/geist@5/index.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/geist-mono@5/index.css">
-    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
-    <script src="https://cdn.tailwindcss.com"></script>
     <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    colors: {
-                        bg: 'var(--bg)', surface: 'var(--surface)', raised: 'var(--raised)',
-                        line: 'var(--line)', ink: 'var(--ink)', muted: 'var(--muted)',
-                        accent: 'var(--accent)', 'accent-ink': 'var(--accent-ink)',
-                        ok: 'var(--ok)', warn: 'var(--warn)', idle: 'var(--idle)'
-                    },
-                    fontFamily: {
-                        sans: ['"Geist Variable"', 'Geist', 'system-ui', '"Segoe UI"', '"Noto Sans Thai"', 'sans-serif'],
-                        mono: ['"Geist Mono Variable"', '"Geist Mono"', 'ui-monospace', 'Consolas', 'monospace']
-                    }
-                }
-            }
-        };
+        // Apply a saved theme before first paint so the page does not flash.
+        try {
+            var saved = localStorage.getItem('theme');
+            if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved;
+        } catch (_) { /* storage unavailable */ }
     </script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5/index.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/jetbrains-mono@5/index.css">
+    <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
-    <style>
-        /* Shape rule: panels 12px, controls 8px, chips and badges full pill. */
-        :root {
-            --bg: #f3f4f6; --surface: #fcfcfd; --raised: #eceef1; --line: #dde1e6;
-            --ink: #14171c; --muted: #566070; --accent: #1f5fd6; --accent-ink: #fcfcfd;
-            --ok: #0f7a56; --warn: #9a5800; --idle: #6b7482;
-            --c1: #1f5fd6; --c2: #0f8f84; --c3: #7a5bd0; --c4: #c2477c; --c5: #8a7a3c; --c6: #6b7482;
-            color-scheme: light;
-        }
-        @media (prefers-color-scheme: dark) {
-            :root:not([data-theme="light"]) {
-                --bg: #0b0d10; --surface: #12151a; --raised: #191d24; --line: #262c36;
-                --ink: #e7eaee; --muted: #929ba8; --accent: #6aa5ff; --accent-ink: #0b0d10;
-                --ok: #3ecf8e; --warn: #f0b429; --idle: #7a8492;
-                --c1: #6aa5ff; --c2: #3cc4b6; --c3: #a594f5; --c4: #ec7fae; --c5: #cdb56a; --c6: #7a8492;
-                color-scheme: dark;
-            }
-        }
-        :root[data-theme="dark"] {
-            --bg: #0b0d10; --surface: #12151a; --raised: #191d24; --line: #262c36;
-            --ink: #e7eaee; --muted: #929ba8; --accent: #6aa5ff; --accent-ink: #0b0d10;
-            --ok: #3ecf8e; --warn: #f0b429; --idle: #7a8492;
-            --c1: #6aa5ff; --c2: #3cc4b6; --c3: #a594f5; --c4: #ec7fae; --c5: #cdb56a; --c6: #7a8492;
-            color-scheme: dark;
-        }
-        body { background: var(--bg); color: var(--ink); }
-        .num { font-variant-numeric: tabular-nums; }
-        .skeleton { background: var(--raised); border-radius: 6px; color: transparent; }
-        :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-        .press:active { transform: translateY(1px); }
-        @media (prefers-reduced-motion: no-preference) {
-            .skeleton { animation: pulse 1.4s ease-in-out infinite; }
-            .spin { animation: spin 0.8s linear infinite; }
-            .press { transition: background-color 0.15s, border-color 0.15s, transform 0.1s; }
-        }
-        @keyframes pulse { 50% { opacity: 0.45; } }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        #diagram svg { max-width: 100%; height: auto; }
-    </style>
+    <script type="module" src="/static/js/dashboard.js"></script>
 </head>
-<body class="font-sans min-h-[100dvh] antialiased">
-    <header class="sticky top-0 z-20 border-b border-line bg-bg">
-        <div class="max-w-[1400px] mx-auto px-4 lg:px-6 h-16 flex items-center justify-between gap-4">
-            <div class="flex items-center gap-3 min-w-0">
-                <i class="ph ph-cloud text-2xl text-accent" aria-hidden="true"></i>
-                <div class="min-w-0">
-                    <h1 class="text-base font-semibold leading-tight truncate">Prodpai Cloud Infrastructure</h1>
-                    <p class="text-xs text-muted truncate">Last Terraform apply: <span id="update-time" class="font-mono num text-ink">loading</span></p>
-                </div>
+<body>
+    <header class="topbar">
+        <div class="topbar__inner">
+            <div class="brand">
+                <i class="ph ph-cloud brand__icon" aria-hidden="true"></i>
+                <h1 class="brand__name">Prodpai Cloud</h1>
+                <span class="brand__slash" aria-hidden="true">/</span>
+                <span id="env-tag" class="tag mono" title="Terraform workspace">prodpai_cloud</span>
+                <span id="source-badge" class="tag" hidden></span>
             </div>
-            <div class="flex items-center gap-2 shrink-0">
-                <span id="source-badge" class="hidden sm:inline-flex items-center rounded-full border border-line px-2.5 py-1 text-xs text-muted"></span>
-                <span id="conn" class="hidden md:inline-flex items-center gap-1.5 text-xs text-muted whitespace-nowrap">
-                    <span id="conn-dot" class="h-1.5 w-1.5 rounded-full" style="background:var(--idle)"></span>
+            <div class="topbar__meta">
+                <span class="meta">
+                    <span class="meta__label">Last synced</span>
+                    <span id="update-time" class="mono">loading</span>
+                </span>
+                <span class="live">
+                    <span id="conn-dot" class="dot"></span>
                     <span id="conn-text">Connecting</span>
                 </span>
-                <button id="refresh-btn" type="button" class="press inline-flex items-center gap-2 rounded-lg bg-accent text-accent-ink px-3 h-9 text-sm font-medium whitespace-nowrap">
-                    <i id="refresh-icon" class="ph ph-arrows-clockwise text-base" aria-hidden="true"></i>
-                    <span class="hidden sm:inline">Refresh</span><span class="sr-only sm:hidden">Refresh</span>
+                <button id="refresh-btn" type="button" class="btn">
+                    <i id="refresh-icon" class="ph ph-arrows-clockwise" aria-hidden="true"></i>
+                    <span class="btn__label">Refresh</span>
+                    <span class="sr-only">Reload data</span>
                 </button>
-                <button id="theme-btn" type="button" aria-label="Switch color theme" class="press inline-flex items-center justify-center rounded-lg border border-line h-9 w-9 hover:bg-raised">
-                    <i class="ph ph-circle-half text-base" aria-hidden="true"></i>
+                <button id="theme-btn" type="button" class="btn btn--icon" aria-label="Switch color theme">
+                    <i class="ph ph-circle-half" aria-hidden="true"></i>
                 </button>
             </div>
         </div>
     </header>
 
-    <main class="max-w-[1400px] mx-auto px-4 lg:px-6 py-6 space-y-6">
-        <div id="notice" class="hidden rounded-xl border border-line bg-surface px-4 py-3 text-sm flex items-start gap-3" role="status">
-            <i id="notice-icon" class="ph ph-info text-lg text-accent mt-0.5" aria-hidden="true"></i>
-            <div class="min-w-0">
-                <p id="notice-title" class="font-medium"></p>
-                <p id="notice-text" class="text-muted break-words"></p>
+    <main class="page">
+        <div id="notice" class="banner" role="status" hidden>
+            <i id="notice-icon" class="ph ph-info" aria-hidden="true"></i>
+            <div class="banner__body">
+                <p id="notice-title" class="banner__title"></p>
+                <p id="notice-text" class="banner__text"></p>
             </div>
         </div>
-        <div id="error" class="hidden rounded-xl border border-warn bg-surface px-4 py-3 text-sm flex items-start gap-3" role="alert">
-            <i class="ph ph-warning text-lg text-warn mt-0.5" aria-hidden="true"></i>
-            <p id="error-text" class="flex-1"></p>
-            <button id="retry-btn" type="button" class="press underline underline-offset-2">Try again</button>
+        <div id="error" class="banner banner--warn" role="alert" hidden>
+            <i class="ph ph-warning" aria-hidden="true"></i>
+            <p id="error-text" class="banner__body"></p>
+            <button id="retry-btn" type="button" class="link">Try again</button>
         </div>
 
-        <!-- Summary -->
-        <section aria-label="Summary" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4">
-            <div class="lg:col-span-2 rounded-xl border border-line bg-surface p-5">
-                <p class="text-sm text-muted">Total resources</p>
-                <p id="sum-total" class="mt-2 text-4xl font-semibold font-mono num"><span class="skeleton">00</span></p>
-                <p id="sum-scope" class="mt-2 text-xs text-muted truncate"></p>
-            </div>
-            <div class="lg:col-span-3 rounded-xl border border-line bg-surface p-5">
-                <p class="text-sm text-muted">Infrastructure status</p>
-                <p id="sum-status" class="mt-2 text-3xl font-semibold flex items-center gap-2"><span class="skeleton">Healthy</span></p>
-                <p id="sum-health" class="mt-2 text-xs text-muted"></p>
-            </div>
-            <div class="lg:col-span-3 rounded-xl border border-line bg-surface p-5">
-                <p class="text-sm text-muted">Estimated monthly cost</p>
-                <p id="sum-cost" class="mt-2 text-3xl font-semibold font-mono num"><span class="skeleton">$000.00</span></p>
-                <p class="mt-2 text-xs text-muted">Rough on-demand estimate in USD. Usage charges are not included.</p>
-            </div>
-            <div class="sm:col-span-2 lg:col-span-4 rounded-xl border border-line bg-surface p-5">
-                <p class="text-sm text-muted">By service category</p>
-                <div id="sum-categories" class="mt-3 grid grid-cols-2 gap-2">
-                    <div class="skeleton h-12"></div><div class="skeleton h-12"></div>
-                    <div class="skeleton h-12"></div><div class="skeleton h-12"></div>
+        <section class="metrics" aria-label="Summary">
+            <div class="metric">
+                <p class="metric__label">Total resources</p>
+                <div class="metric__row">
+                    <p id="sum-total" class="metric__value mono"><span class="skeleton"></span></p>
+                    <span id="spark-total"></span>
                 </div>
+                <p id="delta-total" class="metric__note"></p>
+            </div>
+            <div class="metric">
+                <p class="metric__label">Needs attention</p>
+                <div class="metric__row">
+                    <p id="sum-attention" class="metric__value mono"><span class="skeleton"></span></p>
+                </div>
+                <p id="delta-attention" class="metric__note"></p>
+            </div>
+            <div class="metric">
+                <p class="metric__label">Estimated cost per month</p>
+                <div class="metric__row">
+                    <p id="sum-cost" class="metric__value mono"><span class="skeleton"></span></p>
+                    <span id="spark-cost"></span>
+                </div>
+                <p id="delta-cost" class="metric__note" title="Rough on-demand estimate in USD. Usage charges are not included."></p>
+            </div>
+            <div class="metric">
+                <p class="metric__label">Infrastructure status</p>
+                <div class="metric__row">
+                    <p id="sum-status" class="metric__value"><span class="skeleton"></span></p>
+                </div>
+                <p id="sum-health" class="metric__note"></p>
             </div>
         </section>
 
-        <!-- Charts -->
-        <section aria-label="Breakdown" class="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            <div class="lg:col-span-5 rounded-xl border border-line bg-surface p-5">
-                <h2 class="text-sm font-semibold">Resources by category</h2>
-                <div class="mt-4 grid grid-cols-1 sm:grid-cols-[180px_1fr] gap-6 items-center">
-                    <div class="relative h-[180px] w-[180px] mx-auto">
-                        <canvas id="category-chart" role="img" aria-label="Doughnut chart of resources by category"></canvas>
-                        <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                            <span id="chart-total" class="text-2xl font-semibold font-mono num"></span>
-                            <span class="text-xs text-muted">resources</span>
+        <div class="split">
+            <aside class="side" aria-label="Breakdown">
+                <section class="panel">
+                    <div class="panel__head"><h2 class="panel__title">By category</h2></div>
+                    <div class="panel__body">
+                        <div class="donut">
+                            <div class="donut__chart">
+                                <canvas id="category-chart" role="img" aria-label="Doughnut chart of resources by category"></canvas>
+                                <div class="donut__center">
+                                    <span id="chart-total" class="donut__total mono"></span>
+                                    <span class="donut__unit">resources</span>
+                                </div>
+                            </div>
+                            <ul id="chart-legend" class="legend"></ul>
                         </div>
+                        <p id="chart-fallback" class="panel__hint" hidden>The chart library could not be loaded. Counts are listed beside it.</p>
                     </div>
-                    <ul id="chart-legend" class="space-y-2 text-sm"></ul>
-                </div>
-                <p id="chart-fallback" class="hidden mt-3 text-xs text-muted">The chart library could not be loaded. Counts are listed above.</p>
-            </div>
-            <div class="lg:col-span-7 rounded-xl border border-line bg-surface p-5">
-                <h2 class="text-sm font-semibold">Resources by type</h2>
-                <div id="type-bars" class="mt-4 space-y-2.5 text-sm">
-                    <div class="skeleton h-5 w-3/4"></div><div class="skeleton h-5 w-1/2"></div><div class="skeleton h-5 w-2/3"></div>
-                </div>
-            </div>
-        </section>
+                </section>
+                <section class="panel">
+                    <div class="panel__head"><h2 class="panel__title">By resource type</h2></div>
+                    <div id="type-bars" class="panel__body bars">
+                        <span class="skeleton skeleton--row"></span><span class="skeleton skeleton--row"></span><span class="skeleton skeleton--row"></span>
+                    </div>
+                </section>
+                <section class="panel">
+                    <div class="panel__head">
+                        <h2 class="panel__title">Recent changes</h2>
+                        <span id="events-count" class="panel__hint"></span>
+                    </div>
+                    <ul id="events" class="events"></ul>
+                </section>
+            </aside>
 
-        <!-- Resources -->
-        <section aria-label="Resources" class="rounded-xl border border-line bg-surface">
-            <div class="p-5 flex flex-col lg:flex-row lg:items-end gap-4">
-                <div class="flex flex-col gap-2 lg:w-80">
-                    <label for="search" class="text-xs font-medium text-muted">Search</label>
-                    <div class="relative">
-                        <i class="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true"></i>
-                        <input id="search" type="search" autocomplete="off" placeholder="Name, ID, type, IP or tag"
-                               class="w-full h-9 rounded-lg border border-line bg-bg pl-9 pr-3 text-sm text-ink placeholder:text-muted">
+            <section class="panel" aria-label="Resources">
+                <div class="toolbar">
+                    <div class="field">
+                        <label for="search" class="sr-only">Search resources</label>
+                        <i class="ph ph-magnifying-glass" aria-hidden="true"></i>
+                        <input id="search" class="input" type="search" autocomplete="off" placeholder="Filter by name, ID, type, IP or tag">
                     </div>
-                </div>
-                <div class="flex flex-col gap-2">
-                    <span id="category-label" class="text-xs font-medium text-muted">Category</span>
-                    <div id="category-chips" role="group" aria-labelledby="category-label" class="flex flex-wrap gap-2"></div>
-                </div>
-                <div class="flex flex-col gap-2">
-                    <label for="status-filter" class="text-xs font-medium text-muted">Status</label>
-                    <select id="status-filter" class="h-9 rounded-lg border border-line bg-bg px-3 text-sm text-ink">
+                    <div id="category-chips" class="segments" role="group" aria-label="Category"></div>
+                    <label for="status-filter" class="sr-only">Status</label>
+                    <select id="status-filter" class="select">
                         <option value="all">All statuses</option>
                         <option value="healthy">Healthy</option>
                         <option value="warning">Warning</option>
+                        <option value="critical">Critical</option>
                         <option value="inactive">Inactive</option>
                         <option value="unknown">Unknown</option>
                     </select>
+                    <div class="toolbar__end">
+                        <span id="tag-filter"></span>
+                        <span id="result-count" class="mono"></span>
+                    </div>
                 </div>
-                <div class="lg:ml-auto flex items-center gap-3 text-xs text-muted">
-                    <span id="tag-filter"></span>
-                    <span id="result-count" class="num whitespace-nowrap"></span>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th scope="col"><button type="button" data-sort="name">Resource</button></th>
+                                <th scope="col"><button type="button" data-sort="type">Type</button></th>
+                                <th scope="col"><button type="button" data-sort="status">Status</button></th>
+                                <th scope="col" class="col-md">Location</th>
+                                <th scope="col" class="col-lg">Tags</th>
+                                <th scope="col"><button type="button" data-sort="monthly_cost">Cost / mo</button></th>
+                            </tr>
+                        </thead>
+                        <tbody id="rows">
+                            <tr><td colspan="6"><span class="skeleton skeleton--row"></span></td></tr>
+                            <tr><td colspan="6"><span class="skeleton skeleton--row"></span></td></tr>
+                            <tr><td colspan="6"><span class="skeleton skeleton--row"></span></td></tr>
+                            <tr><td colspan="6"><span class="skeleton skeleton--row"></span></td></tr>
+                        </tbody>
+                    </table>
                 </div>
-            </div>
-            <div class="overflow-x-auto border-t border-line">
-                <table class="w-full text-sm text-left">
-                    <thead class="text-xs text-muted">
-                        <tr>
-                            <th scope="col" class="px-5 py-3 font-medium"><button type="button" data-sort="name" class="press hover:text-ink">Resource</button></th>
-                            <th scope="col" class="px-3 py-3 font-medium"><button type="button" data-sort="type" class="press hover:text-ink">Type</button></th>
-                            <th scope="col" class="px-3 py-3 font-medium hidden 2xl:table-cell">Provider</th>
-                            <th scope="col" class="px-3 py-3 font-medium"><button type="button" data-sort="status" class="press hover:text-ink">Status</button></th>
-                            <th scope="col" class="px-3 py-3 font-medium hidden md:table-cell">Region / AZ</th>
-                            <th scope="col" class="px-3 py-3 font-medium hidden md:table-cell">IP / endpoint</th>
-                            <th scope="col" class="px-3 py-3 font-medium hidden xl:table-cell">Tags</th>
-                            <th scope="col" class="px-5 py-3 font-medium text-right"><button type="button" data-sort="monthly_cost" class="press hover:text-ink whitespace-nowrap">Est. cost / mo</button></th>
-                        </tr>
-                    </thead>
-                    <tbody id="rows">
-                        <tr><td colspan="8" class="px-5 py-3"><div class="skeleton h-5"></div></td></tr>
-                        <tr><td colspan="8" class="px-5 py-3"><div class="skeleton h-5"></div></td></tr>
-                        <tr><td colspan="8" class="px-5 py-3"><div class="skeleton h-5"></div></td></tr>
-                        <tr><td colspan="8" class="px-5 py-3"><div class="skeleton h-5"></div></td></tr>
-                    </tbody>
-                </table>
-            </div>
-            <div id="empty" class="hidden px-5 py-12 text-center">
-                <i class="ph ph-funnel-x text-3xl text-muted" aria-hidden="true"></i>
-                <p id="empty-title" class="mt-3 font-medium"></p>
-                <p id="empty-hint" class="mt-1 text-sm text-muted"></p>
-                <button id="clear-btn" type="button" class="press mt-4 rounded-lg border border-line px-3 h-9 text-sm hover:bg-raised">Clear filters</button>
-            </div>
-        </section>
+                <div id="empty" class="empty" hidden>
+                    <i class="ph ph-funnel-x" aria-hidden="true"></i>
+                    <p id="empty-title" class="empty__title"></p>
+                    <p id="empty-hint" class="empty__hint"></p>
+                    <button id="clear-btn" type="button" class="btn">Clear filters</button>
+                </div>
+            </section>
+        </div>
 
-        <!-- Topology and raw data -->
-        <section aria-label="Architecture" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <div class="lg:col-span-2 rounded-xl border border-line bg-surface p-5 overflow-x-auto">
-                <h2 class="text-sm font-semibold">Architecture diagram</h2>
-                <div id="diagram" class="mt-4 flex justify-center text-sm text-muted">Loading diagram</div>
-            </div>
-            <div class="rounded-xl border border-line bg-surface p-5 flex flex-col max-h-[600px]">
-                <h2 class="text-sm font-semibold">Incoming JSON data</h2>
-                <pre id="json-log" class="mt-4 flex-1 overflow-auto rounded-lg bg-bg border border-line p-3 text-xs font-mono whitespace-pre-wrap break-words">Waiting for data</pre>
-            </div>
-        </section>
+        <div class="lower">
+            <section class="panel">
+                <div class="panel__head"><h2 class="panel__title">Architecture diagram</h2></div>
+                <div id="diagram" class="panel__body diagram">Loading diagram</div>
+            </section>
+            <section class="panel">
+                <div class="panel__head">
+                    <h2 class="panel__title">Incoming JSON</h2>
+                    <span id="raw-file" class="panel__hint mono"></span>
+                </div>
+                <pre id="json-log" class="code">Waiting for data</pre>
+            </section>
+        </div>
 
-        <p id="checked" class="text-xs text-muted num"></p>
+        <p id="checked" class="footnote"></p>
         <div id="live" class="sr-only" aria-live="polite"></div>
     </main>
-
-    <script type="module">
-        const CATEGORY_ORDER = ['Compute', 'Network', 'Storage', 'Security', 'Database', 'Other'];
-        const HEALTH_COLOR = { healthy: 'var(--ok)', warning: 'var(--warn)', inactive: 'var(--idle)', unknown: 'var(--idle)' };
-
-        const $ = (id) => document.getElementById(id);
-        const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-        const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
-        const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
-        const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-
-        const state = {
-            data: null, version: null, busy: false, timer: null,
-            q: '', category: 'All', status: 'all', tag: null,
-            sortKey: 'category', sortDir: 1, chart: null, diagramRun: 0
-        };
-
-        // How each server state is presented. Unknown states fall back to "waiting".
-        const STATE_UI = {
-            live: { icon: 'ph-info', tone: 'accent' },
-            waiting: { icon: 'ph-hourglass', tone: 'accent' },
-            writing: { icon: 'ph-arrows-clockwise', tone: 'accent', spin: true },
-            invalid: { icon: 'ph-warning', tone: 'warn' },
-            schema: { icon: 'ph-warning', tone: 'warn' }
-        };
-        const SOURCE_LABEL = { live: 'Live file', stale: 'Previous data', mock: 'Sample data', none: 'No data yet' };
-
-        // The JSON shape can change between Terraform versions or edits to outputs.tf.
-        // Everything the renderers touch is coerced here, so a missing or mistyped field cannot break the page.
-        const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
-        const text = (v, fallback = '') => (v === null || v === undefined || typeof v === 'object' ? fallback : String(v));
-        function sanitize(input) {
-            const d = obj(input);
-            const resources = (Array.isArray(d.resources) ? d.resources : [])
-                .filter((r) => r && typeof r === 'object' && !Array.isArray(r))
-                .map((r) => ({
-                    id: text(r.id, 'unknown'),
-                    name: text(r.name, text(r.id, 'unnamed')),
-                    type: text(r.type, 'unknown'),
-                    category: text(r.category, 'Other'),
-                    provider: text(r.provider, 'aws'),
-                    status: text(r.status, 'unknown'),
-                    health: HEALTH_COLOR[r.health] ? r.health : 'unknown',
-                    region: text(r.region), az: text(r.az), endpoint: text(r.endpoint), spec: text(r.spec),
-                    ips: (Array.isArray(r.ips) ? r.ips : []).map((ip) => text(ip)).filter(Boolean),
-                    tags: Object.fromEntries(Object.entries(obj(r.tags)).map(([k, v]) => [k, text(v)])),
-                    monthly_cost: Number.isFinite(Number(r.monthly_cost)) ? Number(r.monthly_cost) : 0
-                }));
-            const count = (key) => resources.reduce((acc, r) => { acc[r[key]] = (acc[r[key]] || 0) + 1; return acc; }, {});
-            const health = { healthy: 0, warning: 0, inactive: 0, unknown: 0 };
-            resources.forEach((r) => { health[r.health] += 1; });
-            const s = obj(d.summary);
-            return {
-                state: STATE_UI[d.state] ? d.state : 'waiting',
-                source: SOURCE_LABEL[d.source] ? d.source : 'none',
-                version: text(d.version, String(Date.now())),
-                message: text(d.message), detail: text(d.detail),
-                update_time: text(d.update_time),
-                meta: { project: text(obj(d.meta).project), environment: text(obj(d.meta).environment), region: text(obj(d.meta).region) },
-                // Counts are derived from the rows themselves, so the summary always agrees with the table.
-                summary: {
-                    total: resources.length, by_category: count('category'), by_type: count('type'), health,
-                    status: text(s.status, resources.length ? (health.warning ? 'Warning' : 'Healthy') : 'No data'),
-                    monthly_cost: resources.reduce((sum, r) => sum + r.monthly_cost, 0)
-                },
-                resources,
-                raw: d.raw === undefined ? null : d.raw
-            };
-        }
-
-        function categories() {
-            const found = Object.keys(state.data.summary.by_category);
-            return found.sort((a, b) => {
-                const ia = CATEGORY_ORDER.indexOf(a), ib = CATEGORY_ORDER.indexOf(b);
-                return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
-            });
-        }
-        function categoryColor(name) {
-            const i = CATEGORY_ORDER.indexOf(name);
-            const slot = i >= 0 ? i : categories().indexOf(name);
-            return `var(--c${(slot % 6) + 1})`;
-        }
-
-        // ---------- data loading ----------
-        async function load(manual = false) {
-            if (state.busy) { state.again = true; return; }
-            state.busy = true;
-            $('refresh-icon').classList.add('spin');
-            try {
-                const headers = state.version && !manual ? { 'If-None-Match': state.version } : {};
-                const res = await fetch('/api/data', { headers, cache: 'no-store' });
-                if (res.status !== 304) {
-                    if (!res.ok) throw new Error(`The server responded with status ${res.status}.`);
-                    const data = sanitize(await res.json());
-                    const changed = state.version !== null && data.version !== state.version;
-                    state.data = data;
-                    state.version = data.version;
-                    render();
-                    if (changed) {
-                        $('live').textContent = data.state === 'live'
-                            ? 'Infrastructure data changed. The dashboard was updated.'
-                            : (data.message || 'Waiting for Terraform state.');
-                    }
-                }
-                $('error').classList.add('hidden');
-                $('checked').textContent = `Data last loaded at ${new Date().toLocaleTimeString()}. The page reloads it only when the server reports a new terraform apply.`;
-            } catch (err) {
-                const detail = err instanceof TypeError ? 'The dashboard server is not reachable.'
-                    : err instanceof SyntaxError ? 'The server sent a response that is not valid JSON.' : err.message;
-                $('error-text').textContent = `Could not load infrastructure data. ${detail}${state.data ? ' Showing the last data received.' : ''}`;
-                $('error').classList.remove('hidden');
-            } finally {
-                state.busy = false;
-                $('refresh-icon').classList.remove('spin');
-                if (state.again) { state.again = false; load(false); }
-            }
-        }
-
-        // The server pushes a "change" event once the Terraform output file has been completely rewritten,
-        // so the page does not poll. Browsers without EventSource fall back to a slow conditional poll.
-        function setConnection(live) {
-            $('conn-dot').style.background = live ? 'var(--ok)' : 'var(--warn)';
-            $('conn-text').textContent = live ? 'Watching for terraform apply' : 'Reconnecting to server';
-        }
-        function connect() {
-            if (!window.EventSource) {
-                $('conn-text').textContent = 'Checking every 5 seconds';
-                setInterval(() => load(false), 5000);
-                return;
-            }
-            const source = new EventSource('/api/events');
-            source.onopen = () => { setConnection(true); load(false); };
-            source.addEventListener('change', () => load(false));
-            source.onerror = () => setConnection(false);
-        }
-
-        // ---------- rendering ----------
-        // Each section renders on its own, so a failure in one cannot blank the rest of the page.
-        function render() {
-            const sections = {
-                header: renderHeader, summary: renderSummary, chart: renderChart, types: renderTypeBars,
-                filters: renderFilters, table: renderTable, diagram: renderDiagram, raw: renderRaw
-            };
-            for (const [name, draw] of Object.entries(sections)) {
-                try { draw(); } catch (err) { console.error(`Section "${name}" failed to render:`, err); }
-            }
-        }
-
-        function renderRaw() {
-            const raw = state.data.raw;
-            $('json-log').textContent = raw === null ? 'Waiting for Terraform state' : JSON.stringify(raw, null, 2);
-        }
-
-        function renderHeader() {
-            const d = state.data;
-            $('update-time').textContent = d.source === 'mock' ? 'waiting for first apply' : (d.update_time || 'not applied yet');
-            const badge = $('source-badge');
-            badge.textContent = SOURCE_LABEL[d.source];
-            badge.classList.remove('hidden');
-            badge.classList.add('sm:inline-flex');
-
-            const ui = STATE_UI[d.state];
-            const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-            $('notice-icon').className = `ph ${ui.icon} text-lg mt-0.5 ${ui.spin && !reduce ? 'spin' : ''}`;
-            $('notice-icon').style.color = `var(--${ui.tone})`;
-            $('notice-title').textContent = d.message;
-            $('notice-text').textContent = d.detail;
-            $('notice').classList.toggle('hidden', !d.message && !d.detail);
-        }
-
-        function renderSummary() {
-            const s = state.data.summary, m = state.data.meta;
-            $('sum-total').textContent = s.total;
-            $('sum-scope').textContent = [m.project, m.environment, m.region].filter(Boolean).join(' / ');
-            $('sum-cost').textContent = money.format(s.monthly_cost);
-
-            const tone = s.status === 'Healthy' ? 'ok' : s.status === 'Warning' ? 'warn' : 'idle';
-            const icon = s.status === 'Healthy' ? 'ph-check-circle' : s.status === 'Warning' ? 'ph-warning' : 'ph-minus-circle';
-            $('sum-status').innerHTML = `<i class="ph ${icon}" style="color:var(--${tone})" aria-hidden="true"></i><span style="color:var(--${tone})">${esc(s.status)}</span>`;
-            const h = s.health;
-            const parts = [`${h.healthy} healthy`, `${h.warning} warning`, `${h.inactive} inactive`];
-            if (h.unknown) parts.push(`${h.unknown} unknown`);
-            $('sum-health').textContent = parts.join(', ');
-
-            const cats = categories();
-            $('sum-categories').innerHTML = cats.length
-                ? cats.map((c) => `
-                    <button type="button" data-category="${esc(c)}" class="press rounded-lg border border-line bg-bg px-3 py-2 text-left hover:bg-raised flex items-center justify-between gap-3">
-                        <span class="text-sm truncate">${esc(c)}</span>
-                        <span class="font-mono num text-lg font-semibold">${s.by_category[c]}</span>
-                    </button>`).join('')
-                : '<p class="col-span-2 text-sm text-muted">No resources reported.</p>';
-        }
-
-        function renderChart() {
-            const s = state.data.summary, cats = categories();
-            $('chart-total').textContent = s.total;
-            $('chart-legend').innerHTML = cats.map((c) => `
-                <li class="flex items-center gap-2">
-                    <span class="h-2.5 w-2.5 rounded-full shrink-0" style="background:${categoryColor(c)}"></span>
-                    <span class="flex-1 truncate">${esc(c)}</span>
-                    <span class="font-mono num">${s.by_category[c]}</span>
-                    <span class="font-mono num text-muted w-12 text-right">${Math.round((s.by_category[c] / s.total) * 100)}%</span>
-                </li>`).join('');
-
-            if (!window.Chart) { $('chart-fallback').classList.remove('hidden'); return; }
-            if (state.chart) state.chart.destroy();
-            const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-            state.chart = new Chart($('category-chart'), {
-                type: 'doughnut',
-                data: {
-                    labels: cats,
-                    datasets: [{
-                        data: cats.map((c) => s.by_category[c]),
-                        backgroundColor: cats.map((c) => cssVar(categoryColor(c).slice(4, -1))),
-                        borderColor: cssVar('--surface'), borderWidth: 2
-                    }]
-                },
-                options: {
-                    cutout: '68%', animation: reduce ? false : { duration: 400 },
-                    plugins: { legend: { display: false } },
-                    onClick: (_evt, items) => { if (items.length) setCategory(cats[items[0].index]); }
-                }
-            });
-        }
-
-        function renderTypeBars() {
-            const entries = Object.entries(state.data.summary.by_type).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-            const max = entries.length ? entries[0][1] : 1;
-            $('type-bars').innerHTML = entries.length
-                ? entries.map(([type, n]) => `
-                    <div class="grid grid-cols-[minmax(0,14rem)_1fr_2rem] items-center gap-3">
-                        <span class="font-mono text-xs truncate" title="${esc(type)}">${esc(type)}</span>
-                        <span class="h-2 rounded-full bg-accent" style="width:${Math.max((n / max) * 100, 2)}%"></span>
-                        <span class="font-mono num text-right">${n}</span>
-                    </div>`).join('')
-                : '<p class="text-sm text-muted">No resources reported.</p>';
-        }
-
-        function renderFilters() {
-            const cats = ['All', ...categories()];
-            if (!cats.includes(state.category)) state.category = 'All';
-            $('category-chips').innerHTML = cats.map((c) => {
-                const on = c === state.category;
-                return `<button type="button" data-category="${esc(c)}" aria-pressed="${on}"
-                    class="press rounded-full border px-3 h-9 text-sm whitespace-nowrap ${on ? 'bg-accent text-accent-ink border-accent' : 'border-line hover:bg-raised'}">${esc(c)}</button>`;
-            }).join('');
-            $('tag-filter').innerHTML = state.tag
-                ? `<button type="button" id="tag-clear" class="press inline-flex items-center gap-1 rounded-full border border-accent text-ink px-2.5 py-1 font-mono">${esc(state.tag)}<i class="ph ph-x" aria-hidden="true"></i><span class="sr-only">Remove tag filter</span></button>`
-                : '';
-        }
-
-        function haystack(r) {
-            return [r.name, r.id, r.type, r.category, r.provider, r.status, r.region, r.az, r.endpoint, r.spec,
-                ...r.ips, ...Object.entries(r.tags).map(([k, v]) => `${k}=${v}`)].join(' ').toLowerCase();
-        }
-
-        function visibleRows() {
-            const q = state.q.trim().toLowerCase();
-            const rows = state.data.resources.filter((r) =>
-                (state.category === 'All' || r.category === state.category) &&
-                (state.status === 'all' || r.health === state.status) &&
-                (!state.tag || Object.entries(r.tags).some(([k, v]) => `${k}=${v}` === state.tag)) &&
-                (!q || haystack(r).includes(q)));
-            const key = state.sortKey;
-            return rows.sort((a, b) => {
-                const av = a[key], bv = b[key];
-                const cmp = typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv));
-                return (cmp || a.name.localeCompare(b.name)) * state.sortDir;
-            });
-        }
-
-        function rowHtml(r) {
-            const addr = [...r.ips, r.endpoint].filter(Boolean);
-            const tags = Object.entries(r.tags).map(([k, v]) => `${k}=${v}`);
-            const chips = tags.slice(0, 2).map((t) =>
-                `<button type="button" data-tag="${esc(t)}" class="press rounded-full border border-line px-2 py-0.5 font-mono text-xs hover:bg-raised whitespace-nowrap">${esc(t)}</button>`).join('');
-            const more = tags.length > 2 ? `<span class="text-xs text-muted" title="${esc(tags.slice(2).join(', '))}">+${tags.length - 2}</span>` : '';
-            return `
-                <tr class="border-t border-line align-top">
-                    <td class="px-5 py-3">
-                        <div class="font-medium whitespace-nowrap">${esc(r.name)}</div>
-                        <div class="font-mono text-xs text-muted truncate max-w-[13rem]" title="${esc(r.id)}">${esc(r.id)}</div>
-                    </td>
-                    <td class="px-3 py-3">
-                        <div class="font-mono text-xs">${esc(r.type)}</div>
-                        <div class="text-xs text-muted whitespace-nowrap">${esc(r.spec || r.category)}</div>
-                    </td>
-                    <td class="px-3 py-3 hidden 2xl:table-cell uppercase text-xs">${esc(r.provider)}</td>
-                    <td class="px-3 py-3 whitespace-nowrap">
-                        <span class="inline-flex items-center gap-1.5">
-                            <span class="h-1.5 w-1.5 rounded-full" style="background:${HEALTH_COLOR[r.health]}"></span>${esc(r.status)}
-                        </span>
-                    </td>
-                    <td class="px-3 py-3 hidden md:table-cell text-xs whitespace-nowrap">
-                        <div>${esc(r.region)}</div>
-                        <div class="text-muted">${esc(r.az)}</div>
-                    </td>
-                    <td class="px-3 py-3 hidden md:table-cell font-mono text-xs max-w-[12rem]">
-                        ${addr.length ? addr.map((a) => `<div class="truncate" title="${esc(a)}">${esc(a)}</div>`).join('') : '<span class="text-muted">none</span>'}
-                    </td>
-                    <td class="px-3 py-3 hidden xl:table-cell"><div class="flex items-center gap-1">${chips}${more}</div></td>
-                    <td class="px-5 py-3 text-right font-mono num">${r.monthly_cost ? money.format(r.monthly_cost) : '<span class="text-muted">$0.00</span>'}</td>
-                </tr>`;
-        }
-
-        function renderTable() {
-            const all = state.data.resources, rows = visibleRows();
-            $('rows').innerHTML = rows.map(rowHtml).join('');
-            $('result-count').textContent = `Showing ${rows.length} of ${all.length}`;
-            const empty = rows.length === 0;
-            $('empty').classList.toggle('hidden', !empty);
-            if (empty) {
-                const noData = all.length === 0;
-                $('empty-title').textContent = noData ? (state.data.message || 'Waiting for Terraform state') : 'No resources match these filters';
-                $('empty-hint').textContent = noData
-                    ? 'Resources appear here by themselves after the next terraform apply writes its output file.'
-                    : 'Try a different search term, category, status or tag.';
-                $('clear-btn').classList.toggle('hidden', noData);
-            }
-            document.querySelectorAll('th').forEach((th) => {
-                const btn = th.querySelector('[data-sort]');
-                if (!btn) return;
-                th.setAttribute('aria-sort', btn.dataset.sort === state.sortKey ? (state.sortDir > 0 ? 'ascending' : 'descending') : 'none');
-            });
-        }
-
-        // ---------- architecture diagram ----------
-        function diagramDefinition(resources) {
-            const of = (type) => resources.filter((r) => r.type === type);
-            const label = (v) => String(v ?? '').replace(/["`<>{}\[\]()|#;]/g, ' ').trim();
-            const lines = ['graph TD', 'NET(["Internet"])'];
-            let entry = 'NET';
-            const link = (id, shape) => { lines.push(shape, `${entry} --> ${id}`); entry = id; };
-
-            const waf = of('aws_wafv2_web_acl')[0], lb = of('aws_lb')[0], asg = of('aws_autoscaling_group')[0];
-            if (waf) link('WAF', `WAF["AWS WAF<br/>${label(waf.name)}"]`);
-            if (lb) link('ALB', `ALB["Load balancer<br/>${label(lb.name)}"]`);
-            if (asg) link('ASG', `ASG[["Auto Scaling group<br/>${label(asg.name)}<br/>${label(asg.spec)}"]]`);
-
-            const instances = of('aws_instance'), vpc = of('aws_vpc')[0];
-            if (instances.length) {
-                lines.push(`subgraph VPC["VPC ${label(vpc ? vpc.id : '')}"]`);
-                instances.forEach((r, i) => lines.push(`EC2_${i}["${label(r.name)}<br/>${label(r.id)}<br/>${label(r.status)}"]`));
-                lines.push('end');
-                instances.forEach((r, i) => { if (r.health !== 'inactive') lines.push(`${entry} --> EC2_${i}`); });
-            }
-            const lambdas = of('aws_lambda_function');
-            if (lambdas.length) {
-                lines.push('CW(("CloudWatch"))');
-                lambdas.forEach((r, i) => lines.push(`FN_${i}["Lambda<br/>${label(r.name)}"]`, `CW -.->|Alert| FN_${i}`));
-            }
-            const buckets = of('aws_s3_bucket');
-            if (buckets.length) {
-                lines.push('subgraph S3["S3 buckets"]');
-                buckets.forEach((r, i) => lines.push(`BKT_${i}[("${label(r.name)}")]`));
-                lines.push('end');
-            }
-            return lines.join('\n');
-        }
-
-        let mermaidModule = null;
-        async function renderDiagram() {
-            const el = $('diagram'), run = ++state.diagramRun;
-            if (!state.data.resources.length) { el.textContent = 'Waiting for Terraform state. Nothing to draw yet.'; return; }
-            try {
-                if (!mermaidModule) {
-                    mermaidModule = (await import('https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs')).default;
-                }
-                const dark = cssVar('--bg') === '#0b0d10';
-                mermaidModule.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral' });
-                const { svg } = await mermaidModule.render(`diagram-svg-${run}`, diagramDefinition(state.data.resources));
-                if (run === state.diagramRun) el.innerHTML = svg;
-            } catch (err) {
-                console.error('Diagram rendering failed:', err);
-                if (run === state.diagramRun) el.textContent = 'The architecture diagram could not be drawn. The resource table above is unaffected.';
-            }
-        }
-
-        // ---------- interactions ----------
-        function setCategory(c) {
-            state.category = state.category === c && c !== 'All' ? 'All' : c;
-            renderFilters();
-            renderTable();
-        }
-
-        document.addEventListener('click', (e) => {
-            const cat = e.target.closest('[data-category]');
-            if (cat) return setCategory(cat.dataset.category);
-            const tag = e.target.closest('[data-tag]');
-            if (tag) { state.tag = tag.dataset.tag; renderFilters(); return renderTable(); }
-            if (e.target.closest('#tag-clear')) { state.tag = null; renderFilters(); return renderTable(); }
-            const sort = e.target.closest('[data-sort]');
-            if (sort && state.data) {
-                state.sortDir = state.sortKey === sort.dataset.sort ? -state.sortDir : 1;
-                state.sortKey = sort.dataset.sort;
-                renderTable();
-            }
-        });
-        $('search').addEventListener('input', (e) => { state.q = e.target.value; if (state.data) renderTable(); });
-        $('status-filter').addEventListener('change', (e) => { state.status = e.target.value; if (state.data) renderTable(); });
-        $('clear-btn').addEventListener('click', () => {
-            Object.assign(state, { q: '', category: 'All', status: 'all', tag: null });
-            $('search').value = '';
-            $('status-filter').value = 'all';
-            renderFilters();
-            renderTable();
-        });
-        $('refresh-btn').addEventListener('click', () => load(true));
-        $('retry-btn').addEventListener('click', () => load(true));
-
-        $('theme-btn').addEventListener('click', () => {
-            const dark = cssVar('--bg') === '#0b0d10';
-            const next = dark ? 'light' : 'dark';
-            document.documentElement.dataset.theme = next;
-            try { localStorage.setItem('theme', next); } catch (_) { /* storage unavailable */ }
-            if (state.data) { renderChart(); renderDiagram(); }
-        });
-        try {
-            const saved = localStorage.getItem('theme');
-            if (saved === 'light' || saved === 'dark') document.documentElement.dataset.theme = saved;
-        } catch (_) { /* storage unavailable */ }
-
-        load(true);
-        connect();
-    </script>
 </body>
 </html>
