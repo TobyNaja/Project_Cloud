@@ -1,0 +1,145 @@
+{
+  "project": "prodpai-cloud",
+  "environment": "prod",
+  "region": "ap-southeast-1",
+  "tags": {
+    "Project": "prodpai",
+    "Environment": "prod",
+    "ManagedBy": "terraform"
+  },
+  "vpc": {
+    "id": "vpc-0a4c7e19b52d83f06",
+    "name": "prodpai-prod-vpc",
+    "cidr_block": "10.20.0.0/16"
+  },
+  "subnets": [
+    {
+      "id": "subnet-03b1f7a2c9d4e8105",
+      "name": "prodpai-public-1a",
+      "cidr_block": "10.20.1.0/24",
+      "availability_zone": "ap-southeast-1a",
+      "tags": { "Tier": "public" }
+    },
+    {
+      "id": "subnet-0d92e4c6a17b3f58e",
+      "name": "prodpai-public-1b",
+      "cidr_block": "10.20.2.0/24",
+      "availability_zone": "ap-southeast-1b",
+      "tags": { "Tier": "public" }
+    },
+    {
+      "id": "subnet-07c5a8e3f1b6d2947",
+      "name": "prodpai-private-1a",
+      "cidr_block": "10.20.11.0/24",
+      "availability_zone": "ap-southeast-1a",
+      "tags": { "Tier": "private" }
+    },
+    {
+      "id": "subnet-0f18b3d7e5c2a6493",
+      "name": "prodpai-private-1b",
+      "cidr_block": "10.20.12.0/24",
+      "availability_zone": "ap-southeast-1b",
+      "tags": { "Tier": "private" }
+    }
+  ],
+  "nat_gateways": [
+    {
+      "id": "nat-0b7e2a94c13f6d850",
+      "name": "prodpai-nat-1a",
+      "public_ip": "13.214.87.142",
+      "private_ip": "10.20.1.37",
+      "availability_zone": "ap-southeast-1a"
+    }
+  ],
+  "waf": {
+    "id": "a3f1c8e2-74b9-4d06-9e15-2c6b8f0d7a41",
+    "name": "prodpai-prod-waf",
+    "rule_count": 3
+  },
+  "load_balancer": {
+    "name": "prodpai-prod-alb",
+    "dns_name": "prodpai-prod-alb-1482093317.ap-southeast-1.elb.amazonaws.com",
+    "load_balancer_type": "application",
+    "scheme": "internet-facing",
+    "state": "active"
+  },
+  "target_group": {
+    "name": "prodpai-prod-tg",
+    "port": 80
+  },
+  "security_groups": {
+    "alb": "sg-0c41e7b29a5d38f16",
+    "ec2": "sg-06a9d3f1c7e52b804",
+    "lambda": "sg-0e25b8c4a61f97d30"
+  },
+  "auto_scaling": {
+    "name": "prodpai-prod-asg",
+    "desired_capacity": 3,
+    "min_size": 2,
+    "max_size": 4
+  },
+  "ec2_instances": [
+    {
+      "id": "i-04d7a1e93c6b2f580",
+      "name": "prodpai-web-1a",
+      "status": "running",
+      "instance_type": "t3.micro",
+      "private_ip": "10.20.11.84",
+      "availability_zone": "ap-southeast-1a",
+      "tags": { "Role": "web" }
+    },
+    {
+      "id": "i-0b93f5c28e1a7d416",
+      "name": "prodpai-web-1b",
+      "status": "running",
+      "instance_type": "t3.micro",
+      "private_ip": "10.20.12.119",
+      "availability_zone": "ap-southeast-1b",
+      "tags": { "Role": "web" }
+    },
+    {
+      "id": "i-0e6c2a84d9f31b752",
+      "name": "prodpai-web-1a-2",
+      "status": "pending",
+      "instance_type": "t3.micro",
+      "private_ip": "10.20.11.203",
+      "availability_zone": "ap-southeast-1a",
+      "tags": { "Role": "web" }
+    }
+  ],
+  "image_builder": {
+    "instance_id": "i-01f8d4b7a2c9e6351",
+    "ami_id": "ami-0c7d91e5b3a2f4680",
+    "instance_type": "t3.small",
+    "status": "terminated",
+    "tags": { "Role": "ami-builder" }
+  },
+  "lambda_functions": [
+    {
+      "name": "prodpai-scale-notifier",
+      "runtime": "python3.12",
+      "memory_size": 256,
+      "tags": { "Role": "alerting" }
+    },
+    {
+      "name": "prodpai-log-archiver",
+      "runtime": "python3.12",
+      "memory_size": 512,
+      "tags": { "Role": "logging" }
+    }
+  ],
+  "s3_buckets": [
+    {
+      "name": "prodpai-prod-alb-logs",
+      "size_gb": 12.4,
+      "versioning": "disabled",
+      "tags": { "Role": "logging" }
+    },
+    {
+      "name": "prodpai-prod-tfstate",
+      "size_gb": 0.2,
+      "versioning": "enabled",
+      "tags": { "Role": "terraform-state" }
+    }
+  ]
+}

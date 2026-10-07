@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+# ข้อมูลจริงจาก terraform apply และไฟล์ชั่วคราวของการเขียนแบบ atomic
+current_infra.json
+*.tmp
