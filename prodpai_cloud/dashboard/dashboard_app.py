@@ -2,7 +2,6 @@ from flask import Flask, Response, request, jsonify, render_template
 import hashlib
 import json
 import os
-import re
 import tempfile
 import threading
 import time
@@ -22,20 +21,23 @@ def resolve_path(path):
     return os.path.abspath(path)
 
 
-# โฟลเดอร์ Terraform ถูก "อ่านอย่างเดียว" เท่านั้น dashboard ไม่เคยเขียนอะไรลงไปในนั้น
-TERRAFORM_DIR = resolve_path(os.environ.get("TERRAFORM_DIR", os.path.join("..", "prodpai_cloud")))
+# โฟลเดอร์ Terraform (root ของ repo ซึ่งอยู่เหนือ dashboard/ หนึ่งชั้น) ถูก "อ่านอย่างเดียว"
+TERRAFORM_DIR = resolve_path(os.environ.get("TERRAFORM_DIR", ".."))
 # ไฟล์ที่ /api/update เขียน (ข้อมูลที่ pipeline POST เข้ามา) อยู่ฝั่ง dashboard เสมอ
 PUSH_FILE = resolve_path(os.environ.get("INFRA_FILE", "current_infra.json"))
 SAMPLE_FILE = os.path.join(BASE_DIR, "current_infra_sample.json")
-# ประวัติของแต่ละ apply (ใช้ทำตัวเลขเปรียบเทียบและ sparkline) เก็บฝั่ง dashboard เสมอ
-HISTORY_FILE = os.path.join(BASE_DIR, "infra_history.json")
-HISTORY_LIMIT = 30
 # ชื่อไฟล์ที่ตรวจหาอัตโนมัติในโฟลเดอร์ Terraform เมื่อไม่ได้ตั้ง INFRA_JSON_PATH
 AUTO_NAMES = ("current_infra.json", "currentinfra.json", "terraform_output.json", "outputs.json")
 # ชื่อ output ที่ใช้เมื่อไฟล์เป็น `terraform output -json` แบบรวมทุก output
 OUTPUT_KEY = os.environ.get("INFRA_OUTPUT_KEY", "infrastructure_summary")
-SAMPLE_FALLBACK = os.environ.get("INFRA_SAMPLE_FALLBACK", "1") != "0"
+# ข้อมูลตัวอย่างปิดไว้เป็นค่าเริ่มต้น เปิดเฉพาะตอน demo ด้วย INFRA_SAMPLE_FALLBACK=1
+SAMPLE_FALLBACK = os.environ.get("INFRA_SAMPLE_FALLBACK", "0") == "1"
 TF_LOCK_NAME = ".terraform.tfstate.lock.info"
+
+# สำเนาถาวรของข้อมูลที่ pipeline POST เข้ามา (disk ของ Render หายทุกครั้งที่ restart/redeploy)
+# bucket ต้องเป็น private และ credential ต้องมีสิทธิ์แค่ s3:GetObject/s3:PutObject บน key นี้
+S3_BUCKET = os.environ.get("INFRA_S3_BUCKET", "").strip()
+S3_KEY = os.environ.get("INFRA_S3_KEY", "dashboard/current_infra.json").strip()
 
 READ_RETRIES = 3
 READ_RETRY_SECONDS = 0.15
@@ -43,6 +45,8 @@ READ_RETRY_SECONDS = 0.15
 WRITE_GRACE_SECONDS = float(os.environ.get("INFRA_WRITE_GRACE_SECONDS", "10"))
 EVENT_CHECK_SECONDS = 1
 EVENT_HEARTBEAT_SECONDS = 15
+# ปิด stream เป็นระยะให้เบราว์เซอร์ต่อใหม่เอง กัน worker ถูกยึดไว้ตลอดไป
+EVENT_STREAM_MAX_SECONDS = int(os.environ.get("EVENT_STREAM_MAX_SECONDS", "300"))
 
 
 def candidate_paths():
@@ -103,11 +107,18 @@ RESOURCE_KEYS = {
     "security_groups": ("aws_security_group", "active"),
     "auto_scaling": ("aws_autoscaling_group", "active"),
     "launch_template": ("aws_launch_template", "active"),
-    "ec2_instances": ("aws_instance", "running"),
-    "image_builder": ("aws_instance", "terminated"),
+    "ec2_instances": ("aws_instance", "unknown"),
+    "image_builder": ("aws_instance", "unknown"),
     "lambda_functions": ("aws_lambda_function", "active"),
+    "log_groups": ("aws_cloudwatch_log_group", "active"),
     "s3_buckets": ("aws_s3_bucket", "available"),
     "rds_instances": ("aws_db_instance", "available"),
+}
+
+# บทบาทของ resource เมื่อ output ไม่ได้ระบุ role มาเอง ใช้แยกเครื่อง builder ออกจากเครื่องที่ให้บริการจริง
+KEY_ROLE = {
+    "ec2_instances": "asg-member",
+    "image_builder": "ami-builder",
 }
 
 TYPE_CATEGORY = {
@@ -115,6 +126,7 @@ TYPE_CATEGORY = {
     "aws_autoscaling_group": "Compute",
     "aws_launch_template": "Compute",
     "aws_lambda_function": "Compute",
+    "aws_cloudwatch_log_group": "Monitoring",
     "aws_vpc": "Network",
     "aws_subnet": "Network",
     "aws_internet_gateway": "Network",
@@ -131,8 +143,8 @@ TYPE_CATEGORY = {
 HEALTHY = {"running", "active", "available", "in-service", "inservice", "healthy", "ok",
            "enabled", "attached", "issued"}
 INACTIVE = {"terminated", "deleted", "disabled", "inactive"}
-WARNING = {"stopped", "stopping", "pending", "shutting-down", "degraded", "provisioning", "draining"}
-CRITICAL = {"unhealthy", "impaired", "failed", "error"}
+WARNING = {"stopped", "stopping", "pending", "shutting-down", "unhealthy", "degraded",
+           "impaired", "failed", "error", "provisioning", "draining"}
 
 # ราคา on-demand โดยประมาณของ ap-southeast-1 (USD) ใช้ประเมินคร่าวๆ เท่านั้น
 HOURS_PER_MONTH = 730
@@ -188,8 +200,6 @@ def health_of(status):
         return "inactive"
     if status in WARNING:
         return "warning"
-    if status in CRITICAL:
-        return "critical"
     return "unknown"
 
 
@@ -215,14 +225,16 @@ def estimate_cost(rtype, item, status):
     return round(cost, 2)
 
 
-def build_resource(item, rtype, default_status, ctx, name_hint=None):
+def build_resource(item, rtype, default_status, ctx, name_hint=None, role=None):
     own_tags = item.get("tags") if isinstance(item.get("tags"), dict) else {}
     tags = {**own_tags, **{k: v for k, v in ctx["tags"].items() if k not in own_tags}}
     tags = {str(k): str(v) for k, v in tags.items()}
 
     rid = first(item, "id", "instance_id", "arn", "name", "function_name", "bucket") or name_hint or rtype
     name = own_tags.get("Name") or first(item, "name", "function_name", "bucket") or name_hint or rid
-    status = str(first(item, "status", "state", "instance_state") or default_status).lower()
+    reported = first(item, "status", "state", "instance_state")
+    # สถานะที่ output ไม่ได้ส่งมา เป็นแค่ค่าเริ่มต้นตามประเภท ต้องบอกหน้าเว็บว่า "สันนิษฐาน"
+    status = str(reported or default_status).lower()
 
     ips = []
     for key in ("private_ip", "private_ip_address", "public_ip", "public_ip_address"):
@@ -243,7 +255,9 @@ def build_resource(item, rtype, default_status, ctx, name_hint=None):
         "type": str(item.get("type") or rtype),
         "category": str(item.get("category") or TYPE_CATEGORY.get(rtype, "Other")),
         "provider": str(item.get("provider") or ctx["provider"]),
+        "role": str(item.get("role") or role or ""),
         "status": status,
+        "status_assumed": reported in (None, ""),
         "health": health_of(status),
         "region": str(first(item, "region") or ctx["region"]),
         "az": str(az) if az else "",
@@ -282,15 +296,9 @@ def expand(key, value):
     return []
 
 
-def region_from_arns(payload):
-    """output ที่ไม่ได้ส่ง region มา ยังหา region ได้จาก ARN ตัวใดตัวหนึ่งในข้อมูล"""
-    match = re.search(r"arn:aws[a-z-]*:[a-z0-9-]+:([a-z]{2}(?:-[a-z]+)+-\d)", json.dumps(payload, default=str))
-    return match.group(1) if match else None
-
-
 def normalize(payload):
     ctx = {
-        "region": str(payload.get("region") or region_from_arns(payload) or "unknown"),
+        "region": str(payload.get("region") or "unknown"),
         "provider": str(payload.get("provider") or "aws"),
         "tags": payload.get("tags") if isinstance(payload.get("tags"), dict) else {},
     }
@@ -299,7 +307,7 @@ def normalize(payload):
     def add(key, item, rtype, default_status, hint=None):
         # resource ที่รูปแบบผิดหนึ่งตัวต้องไม่ทำให้ตัวอื่นหายไปด้วย
         try:
-            resources.append(build_resource(item, rtype, default_status, ctx, hint))
+            resources.append(build_resource(item, rtype, default_status, ctx, hint, KEY_ROLE.get(key)))
         except Exception as exc:
             issues.append(f"{key}: skipped one entry ({type(exc).__name__}: {exc})")
 
@@ -336,15 +344,13 @@ def normalize(payload):
 
 def summarize(resources):
     by_category, by_type = {}, {}
-    health = {"healthy": 0, "warning": 0, "critical": 0, "inactive": 0, "unknown": 0}
+    health = {"healthy": 0, "warning": 0, "inactive": 0, "unknown": 0}
     for r in resources:
         by_category[r["category"]] = by_category.get(r["category"], 0) + 1
         by_type[r["type"]] = by_type.get(r["type"], 0) + 1
         health[r["health"]] += 1
     if not resources:
         status = "No data"
-    elif health["critical"]:
-        status = "Critical"
     elif health["warning"]:
         status = "Warning"
     else:
@@ -354,67 +360,10 @@ def summarize(resources):
         "by_category": by_category,
         "by_type": by_type,
         "health": health,
+        "assumed_status": sum(1 for r in resources if r.get("status_assumed")),
         "status": status,
-        "attention": health["warning"] + health["critical"],
         "monthly_cost": round(sum(r["monthly_cost"] for r in resources), 2),
     }
-
-
-def read_history():
-    try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
-    except (OSError, ValueError):
-        return []
-
-
-def public_history():
-    return [{k: v for k, v in e.items() if k not in ("digest", "resources")} for e in read_history()]
-
-
-def record_history(data, data_path):
-    """บันทึกสรุปของข้อมูลชุดใหม่และสิ่งที่เปลี่ยนเทียบกับชุดก่อน ข้ามถ้าเนื้อหาเหมือนเดิม"""
-    payload = unwrap(data)
-    content = {k: v for k, v in payload.items() if k != "update_time"}
-    digest = hashlib.sha1(json.dumps(content, sort_keys=True, default=str).encode()).hexdigest()
-    history = read_history()
-    last = history[-1] if history else None
-    if last and last.get("digest") == digest:
-        return
-
-    resources = normalize(payload)[0]
-    if not resources and not last:
-        return
-    current = {f"{r['type']}|{r['id']}": [r["name"], r["status"]] for r in resources}
-    before = last.get("resources") if last and isinstance(last.get("resources"), dict) else {}
-    when = payload.get("update_time")
-    if not when:
-        when = datetime.fromtimestamp(os.path.getmtime(data_path)).strftime("%Y-%m-%d %H:%M:%S")
-    summary = summarize(resources)
-    history.append({
-        "time": str(when),
-        "total": summary["total"],
-        "monthly_cost": summary["monthly_cost"],
-        "attention": summary["attention"],
-        "initial": last is None,
-        "added": [v[0] for k, v in current.items() if k not in before],
-        "removed": [v[0] for k, v in before.items() if k not in current],
-        "changed": [{"name": v[0], "from": before[k][1], "to": v[1]}
-                    for k, v in current.items() if k in before and before[k][1] != v[1]],
-        "digest": digest,
-        "resources": current,
-    })
-
-    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(HISTORY_FILE), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(history[-HISTORY_LIMIT:], f, ensure_ascii=False)
-        os.replace(tmp_path, HISTORY_FILE)
-    except OSError:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        raise
 
 
 def stat_signature(path):
@@ -542,10 +491,6 @@ def get_snapshot():
 
         if state == "live":
             _last_good.update(data=data, path=used)
-            try:
-                record_history(data, used)
-            except Exception:  # ประวัติพังไม่ควรทำให้หน้าเว็บโหลดข้อมูลไม่ได้
-                app.logger.exception("Could not record apply history")
         elif head is None or head[1] == "ok":
             # ไฟล์หายไปหรือว่างเปล่าจริงๆ (เช่นหลัง destroy) ไม่ควรค้างข้อมูลเก่าไว้
             _last_good.update(data=None, path=None)
@@ -559,7 +504,7 @@ def get_snapshot():
             "data_path": data_path,
             "applying": applying,
             "watching": [display_path(p) for p in paths],
-            "version": hashlib.sha1(f"{state}|{source}|{signature}".encode()).hexdigest()[:16],
+            "version": hashlib.sha256(f"{state}|{source}|{signature}".encode()).hexdigest()[:16],
         }
         _snapshot_cache.update(signature=signature, snapshot=snapshot)
         return snapshot
@@ -568,6 +513,54 @@ def get_snapshot():
 def load_sample():
     status, data, _ = read_stable(SAMPLE_FILE)
     return data if status == "ok" and data else dict(FALLBACK_MOCK)
+
+
+def write_atomic(path, body):
+    """เขียนไฟล์ชั่วคราวแล้วค่อยสลับ เพื่อไม่ให้ฝั่งอ่านเจอไฟล์ที่เขียนไม่เสร็จ"""
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path), suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(body)
+        os.replace(tmp_path, path)
+    except OSError:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
+def s3_client():
+    import boto3  # import ตอนใช้ เพื่อให้ dashboard ยังรันได้แม้ไม่ได้ติดตั้ง boto3 และไม่ได้ใช้ S3
+    from botocore.config import Config
+    return boto3.client("s3", config=Config(connect_timeout=5, read_timeout=10,
+                                            retries={"max_attempts": 2}))
+
+
+def backup_to_s3(body):
+    """คืนค่าข้อความ error ถ้าเก็บไม่สำเร็จ หรือ None ถ้าสำเร็จ"""
+    try:
+        s3_client().put_object(Bucket=S3_BUCKET, Key=S3_KEY, Body=body,
+                               ContentType="application/json", ServerSideEncryption="AES256")
+        return None
+    except Exception as exc:
+        app.logger.warning("Could not back up infrastructure data to S3: %s", exc)
+        return f"{type(exc).__name__}: {exc}"
+
+
+def restore_from_s3():
+    """ตอนเริ่ม process ถ้าไฟล์ local หายไป (restart/redeploy) ให้ดึงชุดล่าสุดกลับมาจาก S3"""
+    if not S3_BUCKET or os.path.exists(PUSH_FILE):
+        return
+    try:
+        body = s3_client().get_object(Bucket=S3_BUCKET, Key=S3_KEY)["Body"].read()
+        decode_json(body)  # ไม่เขียนทับด้วยข้อมูลเสีย
+        write_atomic(PUSH_FILE, body)
+        app.logger.info("Restored infrastructure data from s3://%s/%s", S3_BUCKET, S3_KEY)
+    except Exception as exc:
+        app.logger.warning("Could not restore infrastructure data from S3: %s", exc)
 
 
 def describe(snapshot, resources, payload, issues):
@@ -614,34 +607,29 @@ def update_infra():
     else:
         payload = req_data
 
-    payload["update_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # update_time คือเวลาที่ terraform สร้าง output ห้ามเขียนทับ เวลาที่ dashboard ได้รับเก็บแยกไว้
+    payload["received_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
 
-    # กันพลาด: ถ้า INFRA_FILE ถูกตั้งให้ชี้เข้าไปในโฟลเดอร์ Terraform จะไม่ยอมเขียนเด็ดขาด
+    # กันพลาด: ห้ามเขียนลง root ของโฟลเดอร์ Terraform (โฟลเดอร์ย่อยอย่าง dashboard/ ไม่กระทบ Terraform)
     target_dir = os.path.dirname(PUSH_FILE)
-    try:
-        inside_terraform = os.path.commonpath([target_dir, TERRAFORM_DIR]) == TERRAFORM_DIR
-    except ValueError:  # คนละไดรฟ์บน Windows
-        inside_terraform = False
-    if inside_terraform:
+    if os.path.normcase(target_dir) == os.path.normcase(TERRAFORM_DIR):
         return jsonify({"status": "error",
-                        "message": "INFRA_FILE points inside the Terraform folder. Refusing to write there."}), 409
+                        "message": "INFRA_FILE points at the Terraform root folder. Refusing to write there."}), 409
 
-    # เขียนไฟล์ชั่วคราวแล้วค่อยสลับ เพื่อไม่ให้ฝั่งอ่านเจอไฟล์ที่เขียนไม่เสร็จ
-    tmp_path = None
+    body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
     try:
-        fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, PUSH_FILE)
+        write_atomic(PUSH_FILE, body)
     except OSError as exc:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
         return jsonify({"status": "error", "message": f"Could not write data file: {exc}"}), 500
 
-    return jsonify({"status": "success", "message": "Dashboard updated!"})
+    stored = ["local"]
+    s3_error = None
+    if S3_BUCKET:
+        s3_error = backup_to_s3(body)
+        if s3_error is None:
+            stored.append("s3")
+    return jsonify({"status": "success", "message": "Dashboard updated!",
+                    "stored": stored, "s3_error": s3_error})
 
 
 @app.route('/api/data', methods=['GET'])
@@ -665,7 +653,7 @@ def get_data():
 
     state, title, detail = describe(snapshot, resources, payload, issues)
 
-    # ยังไม่มีข้อมูลจริงให้แสดง: ใช้ข้อมูลตัวอย่างเป็น preview (ปิดได้ด้วย INFRA_SAMPLE_FALLBACK=0)
+    # ยังไม่มีข้อมูลจริง: แสดงข้อมูลตัวอย่างเฉพาะเมื่อเปิด INFRA_SAMPLE_FALLBACK=1 และติดป้ายชัดเจน
     if not resources and SAMPLE_FALLBACK:
         try:
             sample = load_sample()
@@ -673,20 +661,22 @@ def get_data():
             resources = normalize(payload)[0]
             source = "mock"
             raw = sample if raw is None else raw  # ถ้ามีไฟล์จริงอยู่ ให้ช่อง raw แสดงของจริงไว้ตรวจ
-            detail = (detail + " Sample data is shown below as a preview.").strip()
+            title = title or "Showing sample data"
+            detail = (detail + " SAMPLE DATA: this is not your real infrastructure.").strip()
         except Exception:
             app.logger.exception("Failed to load sample data")
             payload, resources, source = {}, [], "none"
     elif not resources:
         source = "none"
 
-    update_time = payload.get("update_time")
-    if not update_time and source in ("live", "stale") and snapshot["data_path"]:
+    applied_at = payload.get("update_time")  # เวลาที่ terraform สร้าง output
+    received_at = payload.get("received_at")  # เวลาที่ dashboard ได้รับข้อมูล
+    if not received_at and source in ("live", "stale") and snapshot["data_path"]:
         try:
-            update_time = datetime.fromtimestamp(
-                os.path.getmtime(snapshot["data_path"])).strftime("%Y-%m-%d %H:%M:%S")
+            received_at = datetime.fromtimestamp(
+                os.path.getmtime(snapshot["data_path"])).astimezone().isoformat(timespec="seconds")
         except OSError:
-            update_time = None
+            received_at = None
 
     response = jsonify({
         "state": state,          # live | waiting | writing | invalid | schema
@@ -698,16 +688,16 @@ def get_data():
         "watching": snapshot["watching"],
         "applying": snapshot["applying"],
         "schema": {"issues": issues, "ignored_keys": ignored},
-        "update_time": str(update_time) if update_time else None,
+        "applied_at": str(applied_at) if applied_at else None,
+        "received_at": str(received_at) if received_at else None,
+        "storage": "local+s3" if S3_BUCKET else "local",
         "meta": {
             "project": payload.get("project"),
             "environment": payload.get("environment"),
-            "region": payload.get("region") or region_from_arns(payload),
-            "workspace": os.path.basename(TERRAFORM_DIR),
+            "region": payload.get("region"),
         },
         "summary": summarize(resources),
         "resources": resources,
-        "history": public_history() if source in ("live", "stale") else [],
         "raw": raw,
     })
     response.headers["ETag"] = version
@@ -730,8 +720,9 @@ def events():
     def stream():
         last = current_version()
         idle = 0
-        yield ": connected\n\n"
-        while True:
+        started = time.monotonic()
+        yield "retry: 3000\n: connected\n\n"
+        while time.monotonic() - started < EVENT_STREAM_MAX_SECONDS:
             time.sleep(EVENT_CHECK_SECONDS)
             current = current_version()
             if current != last:
@@ -748,6 +739,9 @@ def events():
                     headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+restore_from_s3()
+
+
 @app.route('/')
 def dashboard():
     # โหลดไฟล์ index.html จากโฟลเดอร์ templates
@@ -756,4 +750,5 @@ def dashboard():
 
 if __name__ == '__main__':
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), debug=debug, threaded=True)
+    host = os.environ.get("HOST", "127.0.0.1")
+    app.run(host=host, port=int(os.environ.get("PORT", 5000)), debug=debug, threaded=True)
